@@ -4,6 +4,6 @@
     "version": "1.0.0",
     "minAppVersion": "1.3.0",
     "description": "Render inline math formulas with spaces inside dollar signs, e.g. $ formula $",
-    "author": "",
+    "author": "reed-yang",
     "isDesktopOnly": false
 }

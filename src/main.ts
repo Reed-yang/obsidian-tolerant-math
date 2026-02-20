@@ -8,12 +8,13 @@ import {
     WidgetType,
 } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
+import { syntaxTree } from "@codemirror/language";
 
-// 匹配内侧有空格的行内公式：$ formula $
-// (?<!\$) 排除 $$ 块级公式开头
-// [ \t]+ 要求内侧至少一个水平空白（不用 \s 以避免跨行）
-// ([^\$\n]+?) 非贪婪捕获公式内容（不含换行和 $）
-// (?!\$) 排除 $$ 块级公式结尾
+// Matches spaced inline math: $ formula $
+// (?<!\$) prevents matching the second $ of $$
+// [ \t]+ requires at least one horizontal space inside (not \s to avoid newlines)
+// ([^\$\n]+?) lazily captures the formula content (no newlines or $)
+// (?!\$) prevents the closing $ from starting a new $$
 const TOLERANT_MATH_REGEX = /(?<!\$)\$[ \t]+([^\$\n]+?)[ \t]+\$(?!\$)/g;
 
 // ── Live Preview Widget ──────────────────────────────────────────────────────
@@ -48,6 +49,22 @@ class TolerantMathWidget extends WidgetType {
 function buildDecorations(view: EditorView): DecorationSet {
     const builder = new RangeSetBuilder<Decoration>();
     const cursors = view.state.selection.ranges;
+
+    // Collect native math node ranges to prevent the regex from matching across two adjacent native formulas
+    const tree = syntaxTree(view.state);
+    const nativeMathRanges: Array<{ from: number; to: number }> = [];
+    for (const { from, to } of view.visibleRanges) {
+        tree.iterate({
+            from,
+            to,
+            enter(node) {
+                if (node.name.toLowerCase().includes("math")) {
+                    nativeMathRanges.push({ from: node.from, to: node.to });
+                }
+            },
+        });
+    }
+
     let needsFinish = false;
 
     for (const { from, to } of view.visibleRanges) {
@@ -60,7 +77,13 @@ function buildDecorations(view: EditorView): DecorationSet {
             const matchTo = matchFrom + match[0].length;
             const formula = match[1].trim();
 
-            // 光标在公式范围内时保留原始文本（允许编辑）
+            // Skip matches that overlap with native math nodes
+            const overlapsNative = nativeMathRanges.some(
+                (r) => r.from < matchTo && r.to > matchFrom
+            );
+            if (overlapsNative) continue;
+
+            // Expose raw source when the cursor is inside the match (allow editing)
             const cursorInside = cursors.some(
                 (r) => r.from <= matchTo && r.to >= matchFrom
             );
@@ -101,14 +124,14 @@ const tolerantMathViewPlugin = ViewPlugin.fromClass(
     { decorations: (instance) => instance.decorations }
 );
 
-// ── Plugin 主类 ──────────────────────────────────────────────────────────────
+// ── Plugin main class ────────────────────────────────────────────────────────
 
 export default class TolerantMathPlugin extends Plugin {
     async onload() {
-        // Live Preview 支持
+        // Live Preview
         this.registerEditorExtension(tolerantMathViewPlugin);
 
-        // Reading View 支持
+        // Reading View
         this.registerMarkdownPostProcessor((element) => {
             this.processElement(element);
         });
@@ -123,7 +146,7 @@ export default class TolerantMathPlugin extends Plugin {
                     const parent = (node as Text).parentElement;
                     if (!parent) return NodeFilter.FILTER_REJECT;
 
-                    // 跳过代码、预格式化和已渲染的数学元素
+                    // Skip code, preformatted, and already-rendered math elements
                     const tag = parent.tagName;
                     if (
                         tag === "CODE" ||
@@ -141,7 +164,7 @@ export default class TolerantMathPlugin extends Plugin {
                         return NodeFilter.FILTER_REJECT;
                     }
 
-                    // 快速过滤：文本中没有 $ 则跳过
+                    // Fast pre-filter: skip nodes with no $ character
                     if (!node.textContent?.includes("$")) {
                         return NodeFilter.FILTER_REJECT;
                     }
@@ -151,7 +174,7 @@ export default class TolerantMathPlugin extends Plugin {
             }
         );
 
-        // 先收集再处理，避免 DOM 修改影响 walker 状态
+        // Collect all target nodes first, then process — DOM mutation would invalidate the walker mid-traversal
         const nodesToProcess: Text[] = [];
         let node: Node | null;
         while ((node = walker.nextNode()) !== null) {
@@ -165,11 +188,11 @@ export default class TolerantMathPlugin extends Plugin {
             }
         }
 
-        // 批量触发 MathJax 渲染
+        // Flush the MathJax render queue once for the whole batch
         if (didRender) finishRenderMath();
     }
 
-    // 返回 true 表示有公式被替换
+    // Returns true if at least one formula was replaced
     private replaceTextNodeWithMath(textNode: Text): boolean {
         const text = textNode.textContent ?? "";
 
@@ -183,14 +206,14 @@ export default class TolerantMathPlugin extends Plugin {
         let didReplace = false;
 
         while ((match = TOLERANT_MATH_REGEX.exec(text)) !== null) {
-            // 匹配前的纯文本
+            // Plain text before this match
             if (match.index > lastIndex) {
                 fragment.appendChild(
                     document.createTextNode(text.slice(lastIndex, match.index))
                 );
             }
 
-            // 渲染公式
+            // Render the formula
             const formula = match[1].trim();
             try {
                 const mathEl = renderMath(formula, false);
@@ -198,14 +221,14 @@ export default class TolerantMathPlugin extends Plugin {
                 fragment.appendChild(mathEl);
                 didReplace = true;
             } catch {
-                // 渲染失败保留原始文本
+                // Keep raw text if rendering fails
                 fragment.appendChild(document.createTextNode(match[0]));
             }
 
             lastIndex = match.index + match[0].length;
         }
 
-        // 剩余文本
+        // Remaining plain text after the last match
         if (lastIndex < text.length) {
             fragment.appendChild(
                 document.createTextNode(text.slice(lastIndex))

@@ -25,6 +25,7 @@ module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var import_view = require("@codemirror/view");
 var import_state = require("@codemirror/state");
+var import_language = require("@codemirror/language");
 var TOLERANT_MATH_REGEX = /(?<!\$)\$[ \t]+([^\$\n]+?)[ \t]+\$(?!\$)/g;
 var TolerantMathWidget = class extends import_view.WidgetType {
   constructor(formula) {
@@ -51,6 +52,19 @@ var TolerantMathWidget = class extends import_view.WidgetType {
 function buildDecorations(view) {
   const builder = new import_state.RangeSetBuilder();
   const cursors = view.state.selection.ranges;
+  const tree = (0, import_language.syntaxTree)(view.state);
+  const nativeMathRanges = [];
+  for (const { from, to } of view.visibleRanges) {
+    tree.iterate({
+      from,
+      to,
+      enter(node) {
+        if (node.name.toLowerCase().includes("math")) {
+          nativeMathRanges.push({ from: node.from, to: node.to });
+        }
+      }
+    });
+  }
   let needsFinish = false;
   for (const { from, to } of view.visibleRanges) {
     const text = view.state.doc.sliceString(from, to);
@@ -60,6 +74,11 @@ function buildDecorations(view) {
       const matchFrom = from + match.index;
       const matchTo = matchFrom + match[0].length;
       const formula = match[1].trim();
+      const overlapsNative = nativeMathRanges.some(
+        (r) => r.from < matchTo && r.to > matchFrom
+      );
+      if (overlapsNative)
+        continue;
       const cursorInside = cursors.some(
         (r) => r.from <= matchTo && r.to >= matchFrom
       );

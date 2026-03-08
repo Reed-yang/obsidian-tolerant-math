@@ -137,7 +137,41 @@ export default class TolerantMathPlugin extends Plugin {
         });
     }
 
+    // Unwrap <em>/<strong> tags that are adjacent to $ characters.
+    // Obsidian's markdown parser consumes * inside $ ^{*1} $ as emphasis,
+    // splitting text nodes across <em> boundaries and preventing regex matching.
+    private unwrapEmphasisAroundDollars(element: HTMLElement): void {
+        const inlineEls = Array.from(element.querySelectorAll("em, strong"));
+        let changed = false;
+
+        for (const el of inlineEls) {
+            const parent = el.parentNode;
+            if (!parent) continue;
+
+            // Only unwrap if this element or its immediate siblings contain $
+            const prev = el.previousSibling?.textContent ?? "";
+            const next = el.nextSibling?.textContent ?? "";
+            const self = el.textContent ?? "";
+            if (!prev.includes("$") && !next.includes("$") && !self.includes("$")) continue;
+
+            // Replace <em>content</em> with its children
+            while (el.firstChild) {
+                parent.insertBefore(el.firstChild, el);
+            }
+            parent.removeChild(el);
+            changed = true;
+        }
+
+        // Merge adjacent text nodes so the regex can match across former boundaries
+        if (changed) element.normalize();
+    }
+
     private processElement(element: HTMLElement): void {
+        if (!element.textContent?.includes("$")) return;
+
+        // Pre-pass: unwrap emphasis that was spuriously created by * inside $ ... $
+        this.unwrapEmphasisAroundDollars(element);
+
         const walker = document.createTreeWalker(
             element,
             NodeFilter.SHOW_TEXT,

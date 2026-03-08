@@ -24,12 +24,13 @@ Runs after Obsidian has parsed Markdown into HTML. At that point, unrecognized `
 
 **Flow:**
 1. Obsidian calls the post-processor with a rendered `HTMLElement`
-2. `processElement()` creates a `TreeWalker` (type `SHOW_TEXT`) to find text nodes
-3. Nodes inside `CODE`, `PRE`, `MATH`, `SCRIPT`, or elements with class `.math` / `.math-inline` / `.math-block` are skipped
-4. Nodes without a `$` character are skipped (fast pre-filter)
-5. All candidate nodes are **collected first**, then processed — this avoids DOM mutation invalidating the walker mid-traversal
-6. `replaceTextNodeWithMath()` splits each text node into a `DocumentFragment`, replacing matched spans with elements returned by `renderMath(formula, false)`
-7. `finishRenderMath()` is called once per `processElement()` invocation to flush the MathJax render queue
+2. `processElement()` first runs `unwrapEmphasisAroundDollars()` — a pre-pass that unwraps `<em>`/`<strong>` tags adjacent to `$` characters. This is necessary because Obsidian's markdown parser consumes `*` inside formulas like `$ ^{*1} $` as emphasis markers, splitting text nodes across `<em>` boundaries and preventing the regex from matching. Only emphasis elements whose own text or immediate siblings contain `$` are unwrapped; unrelated emphasis is preserved. After unwrapping, `element.normalize()` merges adjacent text nodes.
+3. A `TreeWalker` (type `SHOW_TEXT`) finds text nodes
+4. Nodes inside `CODE`, `PRE`, `MATH`, `SCRIPT`, or elements with class `.math` / `.math-inline` / `.math-block` are skipped
+5. Nodes without a `$` character are skipped (fast pre-filter)
+6. All candidate nodes are **collected first**, then processed — this avoids DOM mutation invalidating the walker mid-traversal
+7. `replaceTextNodeWithMath()` splits each text node into a `DocumentFragment`, replacing matched spans with elements returned by `renderMath(formula, false)`
+8. `finishRenderMath()` is called once per `processElement()` invocation to flush the MathJax render queue
 
 ### 2. Live Preview — CodeMirror 6 `ViewPlugin`
 
@@ -106,6 +107,8 @@ npm run build    # production build (no sourcemaps)
 
 **TreeWalker node collection before mutation**: If you process text nodes inline while walking, replacing a node removes it from the DOM, which can disrupt the walker's internal pointer. Always collect all target nodes into an array first, then iterate the array for replacement.
 
+**Emphasis unwrapping in Reading View**: Obsidian's markdown parser runs before the post-processor. When formulas contain `*` (e.g., `$ ^{*1} $` for author affiliations), the parser consumes `*` as emphasis markers, wrapping parts of the text in `<em>` tags. This splits the `$ ... $` pattern across multiple text nodes, making regex matching impossible. The fix is a targeted pre-pass (`unwrapEmphasisAroundDollars`) that unwraps only emphasis elements adjacent to `$` characters, then calls `normalize()` to merge text nodes. This does not affect Live Preview (which operates on raw source text via CM6).
+
 ---
 
 ## Reference Files (do not modify)
@@ -132,6 +135,8 @@ When verifying changes, test all of the following in both Reading View and Live 
 | `The price is $5 and $10.` | No math rendering |
 | Cursor placed inside `$ formula $` (Live Preview) | Source text visible and editable |
 | Cursor moved outside formula (Live Preview) | Re-renders as math |
+| `$ ^{*1} $` (Reading View) | Renders as superscript (emphasis unwrapped) |
+| `Text $ ^{*1} $ , more $ ^{*2} $` (Reading View) | Both render; no spurious italics |
 
 ---
 

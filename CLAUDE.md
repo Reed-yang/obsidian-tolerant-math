@@ -24,7 +24,7 @@ Runs after Obsidian has parsed Markdown into HTML. At that point, unrecognized `
 
 **Flow:**
 1. Obsidian calls the post-processor with a rendered `HTMLElement`
-2. `processElement()` first runs `unwrapEmphasisAroundDollars()` — a pre-pass that unwraps `<em>`/`<strong>` tags adjacent to `$` characters. This is necessary because Obsidian's markdown parser consumes `*` inside formulas like `$ ^{*1} $` as emphasis markers, splitting text nodes across `<em>` boundaries and preventing the regex from matching. Only emphasis elements whose own text or immediate siblings contain `$` are unwrapped; unrelated emphasis is preserved. After unwrapping, `element.normalize()` merges adjacent text nodes.
+2. `processElement()` first runs `unwrapInlineFormattingNearDollars()` — a multi-pass pre-pass that unwraps inline formatting elements (`<em>`, `<strong>`, classless `<span>`, `<del>`, `<s>`) near `$` characters. This is necessary because Obsidian's markdown parser consumes `*` and `_` inside formulas as emphasis markers (e.g., `$ ^{*1} $`, `$ K_{\mathcal{X}}..._{t} $`) and consumes `\` before ASCII punctuation as escapes (e.g., `\|` → `|`), splitting text nodes across element boundaries and preventing the regex from matching. The pre-pass has three safety layers: (a) a regex gate that skips elements without a valid `$ ... $` pattern, (b) a LaTeX content heuristic that only unwraps plain-text elements if `$` appears on both sides, and (c) a `MAX_PASSES` limit. After each pass, `element.normalize()` merges adjacent text nodes, propagating `$` characters closer to remaining inner elements for the next pass.
 3. A `TreeWalker` (type `SHOW_TEXT`) finds text nodes
 4. Nodes inside `CODE`, `PRE`, `MATH`, `SCRIPT`, or elements with class `.math` / `.math-inline` / `.math-block` are skipped
 5. Nodes without a `$` character are skipped (fast pre-filter)
@@ -107,7 +107,9 @@ npm run build    # production build (no sourcemaps)
 
 **TreeWalker node collection before mutation**: If you process text nodes inline while walking, replacing a node removes it from the DOM, which can disrupt the walker's internal pointer. Always collect all target nodes into an array first, then iterate the array for replacement.
 
-**Emphasis unwrapping in Reading View**: Obsidian's markdown parser runs before the post-processor. When formulas contain `*` (e.g., `$ ^{*1} $` for author affiliations), the parser consumes `*` as emphasis markers, wrapping parts of the text in `<em>` tags. This splits the `$ ... $` pattern across multiple text nodes, making regex matching impossible. The fix is a targeted pre-pass (`unwrapEmphasisAroundDollars`) that unwraps only emphasis elements adjacent to `$` characters, then calls `normalize()` to merge text nodes. This does not affect Live Preview (which operates on raw source text via CM6).
+**Inline formatting unwrapping in Reading View**: Obsidian's markdown parser runs before the post-processor. When formulas contain `*` or `_` (e.g., `$ ^{*1} $` for author affiliations, `$ K_{\mathcal{X}}..._{t} $` for subscripts), the parser may consume these as emphasis markers, wrapping parts of the text in `<em>` tags. Similarly, `\` before ASCII punctuation (e.g., `\|` for norms) is consumed as a Markdown escape, potentially creating `<span>` elements. Both cases split the `$ ... $` pattern across multiple text nodes, making regex matching impossible. The fix is a multi-pass pre-pass (`unwrapInlineFormattingNearDollars`) that unwraps `<em>`, `<strong>`, classless `<span>`, `<del>`, and `<s>` elements near `$` characters. Safety guards prevent unwrapping legitimate formatting: (1) a regex gate skips elements without `$ ... $` patterns (avoids `$5` price triggers), (2) elements with plain-text content (no `\{}^` characters) require `$` on both sides, and (3) `<span>` elements with CSS classes are preserved. This does not affect Live Preview (which operates on raw source text via CM6).
+
+**Known limitation — backslash escapes in formulas**: CommonMark consumes `\` before ASCII punctuation (`\|` → `|`, `\{` → `{`, etc.) during parsing, before the post-processor runs. In Reading View, these backslashes are irrecoverably lost. Formulas with `\|` (norm notation) will render with single bars `|` instead of double bars `‖`. This is a Markdown parser limitation that cannot be fixed at the post-processor level. Live Preview is unaffected (operates on raw source text). Users can work around this by using `\Vert` instead of `\|`.
 
 ---
 
@@ -137,6 +139,9 @@ When verifying changes, test all of the following in both Reading View and Live 
 | Cursor moved outside formula (Live Preview) | Re-renders as math |
 | `$ ^{*1} $` (Reading View) | Renders as superscript (emphasis unwrapped) |
 | `Text $ ^{*1} $ , more $ ^{*2} $` (Reading View) | Both render; no spurious italics |
+| `$ K_{\mathcal{X}}..._{t}...\|...\| $` (Reading View) | Renders (formatting unwrapped); `\|` shown as `|` (known limitation) |
+| `**Bold text** and $ formula $` (Reading View) | Bold preserved; formula renders |
+| `The price is $5 and **important** text` (Reading View) | No math rendering; bold preserved |
 
 ---
 

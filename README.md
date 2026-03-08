@@ -113,7 +113,9 @@ Using a lazy quantifier (`+?`) correctly handles multiple formulas on the same l
 
 ### Reading View Pipeline
 
-`registerMarkdownPostProcessor` → `TreeWalker` traverses text nodes (skipping `<code>`, `<pre>`, `<math>`, `.math` elements) → matched nodes are split into a `DocumentFragment` with rendered math elements inserted → `finishRenderMath()` is called once per batch to flush the MathJax render queue.
+`registerMarkdownPostProcessor` → **inline formatting unwrap pre-pass** (multi-pass: unwraps `<em>`, `<strong>`, classless `<span>`, `<del>`, `<s>` near `$` characters, with safety guards to preserve legitimate formatting) → `TreeWalker` traverses text nodes (skipping `<code>`, `<pre>`, `<math>`, `.math` elements) → matched nodes are split into a `DocumentFragment` with rendered math elements inserted → `finishRenderMath()` is called once per batch to flush the MathJax render queue.
+
+The unwrap pre-pass is necessary because Obsidian's Markdown parser consumes `*`, `_`, and `\` before punctuation as emphasis/escape markers, splitting formula text across element boundaries. The pre-pass runs in a loop: each pass unwraps elements adjacent to `$`, then `normalize()` merges text nodes, propagating `$` closer to remaining inner elements. A regex gate and a LaTeX content heuristic prevent unwrapping legitimate bold/italic/strikethrough formatting outside formulas.
 
 Text nodes are collected before processing begins to avoid invalidating the walker while modifying the DOM.
 
@@ -132,6 +134,7 @@ Obsidian's built-in `renderMath()` and `finishRenderMath()` are used exclusively
 - **Space requirement**: Only `$ formula $` (spaces on **both** sides) is matched. Asymmetric cases like `$formula $` are not handled. OCR output is typically symmetric, making this a non-issue in practice.
 - **Dollar sign inside formula**: Content containing a literal `$` (e.g., `$ \$100 $`) is not matched — this format is inherently ambiguous and is intentionally left unhandled.
 - **No cross-line formulas**: Inline math cannot span multiple lines, consistent with Obsidian's native behavior.
+- **Backslash escapes in Reading View**: CommonMark consumes `\` before ASCII punctuation during parsing (e.g., `\|` → `|`). In Reading View, formulas with `\|` (norm notation) render with single bars instead of double bars. Live Preview is unaffected. Workaround: use `\Vert` instead of `\|`.
 - **Source Mode**: No rendering is applied in Source (raw text) mode, which is the expected behavior.
 
 ---

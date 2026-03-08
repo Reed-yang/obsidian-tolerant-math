@@ -137,40 +137,74 @@ export default class TolerantMathPlugin extends Plugin {
         });
     }
 
-    // Unwrap <em>/<strong> tags that are adjacent to $ characters.
-    // Obsidian's markdown parser consumes * inside $ ^{*1} $ as emphasis,
-    // splitting text nodes across <em> boundaries and preventing regex matching.
-    private unwrapEmphasisAroundDollars(element: HTMLElement): void {
-        const inlineEls = Array.from(element.querySelectorAll("em, strong"));
-        let changed = false;
+    // Unwrap inline formatting elements (em, strong, span, etc.) that interfere
+    // with $ ... $ pattern matching. Obsidian's markdown parser consumes * and _
+    // as emphasis and \ before ASCII punctuation as escapes, creating elements
+    // that split text nodes across boundaries and preventing regex matching.
+    // Runs multiple passes: each pass unwraps elements adjacent to $, then
+    // normalize() merges text nodes, propagating $ closer to remaining elements.
+    private unwrapInlineFormattingNearDollars(element: HTMLElement): void {
+        // Gate: only run if the element's full text actually contains a $ ... $ pattern.
+        // This prevents unwrapping in elements that only have $ as currency (e.g. "$5").
+        TOLERANT_MATH_REGEX.lastIndex = 0;
+        if (!TOLERANT_MATH_REGEX.test(element.textContent ?? "")) return;
+        TOLERANT_MATH_REGEX.lastIndex = 0;
 
-        for (const el of inlineEls) {
-            const parent = el.parentNode;
-            if (!parent) continue;
+        const SKIP_CLASSES = ["math", "math-inline", "math-block"];
+        const SELECTOR = "em, strong, span, del, s";
+        const MAX_PASSES = 10;
 
-            // Only unwrap if this element or its immediate siblings contain $
-            const prev = el.previousSibling?.textContent ?? "";
-            const next = el.nextSibling?.textContent ?? "";
-            const self = el.textContent ?? "";
-            if (!prev.includes("$") && !next.includes("$") && !self.includes("$")) continue;
+        let changed: boolean;
+        let pass = 0;
+        do {
+            if (++pass > MAX_PASSES) break;
+            changed = false;
+            const inlineEls = Array.from(element.querySelectorAll(SELECTOR));
 
-            // Replace <em>content</em> with its children
-            while (el.firstChild) {
-                parent.insertBefore(el.firstChild, el);
+            for (const el of inlineEls) {
+                const parent = el.parentNode;
+                if (!parent) continue;
+
+                // Skip elements with math-related classes
+                if (el instanceof HTMLElement) {
+                    if (SKIP_CLASSES.some(c => el.classList.contains(c))) continue;
+                    // For <span>, only unwrap classless spans (backslash-escape artifacts);
+                    // preserve Obsidian UI spans that carry styling classes
+                    if (el.tagName === "SPAN" && el.classList.length > 0) continue;
+                }
+
+                // Only unwrap if this element or its immediate siblings contain $
+                const prev = el.previousSibling?.textContent ?? "";
+                const next = el.nextSibling?.textContent ?? "";
+                const self = el.textContent ?? "";
+                if (!prev.includes("$") && !next.includes("$") && !self.includes("$")) continue;
+
+                // Safety: if the element content is plain text (no LaTeX metacharacters
+                // like \, {, }, ^), it is likely legitimate formatting (e.g. bold headings)
+                // rather than formula fragments. Only unwrap if $ is on BOTH sides,
+                // meaning the element is genuinely between formula delimiters.
+                if (!/[\\{}^]/.test(self) && !self.includes("$")) {
+                    if (!prev.includes("$") || !next.includes("$")) continue;
+                }
+
+                // Replace element with its children
+                while (el.firstChild) {
+                    parent.insertBefore(el.firstChild, el);
+                }
+                parent.removeChild(el);
+                changed = true;
             }
-            parent.removeChild(el);
-            changed = true;
-        }
 
-        // Merge adjacent text nodes so the regex can match across former boundaries
-        if (changed) element.normalize();
+            // Merge adjacent text nodes so $ propagates to remaining elements
+            if (changed) element.normalize();
+        } while (changed);
     }
 
     private processElement(element: HTMLElement): void {
         if (!element.textContent?.includes("$")) return;
 
-        // Pre-pass: unwrap emphasis that was spuriously created by * inside $ ... $
-        this.unwrapEmphasisAroundDollars(element);
+        // Pre-pass: unwrap inline formatting spuriously created by * / _ / \ escapes inside $ ... $
+        this.unwrapInlineFormattingNearDollars(element);
 
         const walker = document.createTreeWalker(
             element,

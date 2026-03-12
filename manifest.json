@@ -1,7 +1,7 @@
 {
     "id": "spaced-inline-math",
     "name": "Tolerant Inline Math",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "minAppVersion": "1.3.0",
     "description": "Render inline math formulas written with spaces inside dollar signs (e.g. $ formula $) without modifying source files.",
     "author": "reed-yang",

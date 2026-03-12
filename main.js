@@ -497,6 +497,11 @@ var DEFAULT_SETTINGS = {
 };
 var pluginSettings = DEFAULT_SETTINGS;
 var TOLERANT_MATH_REGEX = /(?<!\$)\$[ \t]+([^\$\n]+?)[ \t]+\$(?!\$)/g;
+function applyRepairIndicator(el, repair) {
+  el.classList.add("tolerant-math-repaired");
+  el.style.borderBottom = "1px dashed rgba(255, 165, 0, 0.4)";
+  el.title = `Auto-repaired: ${repair.description}`;
+}
 var TolerantMathWidget = class extends import_view.WidgetType {
   constructor(formula) {
     super();
@@ -507,19 +512,22 @@ var TolerantMathWidget = class extends import_view.WidgetType {
   }
   toDOM() {
     const span = createEl("span", { cls: "tolerant-math-widget" });
-    const rendered = tryRenderMath(this.formula, false);
-    if (rendered) {
-      span.appendChild(rendered);
-    } else if (pluginSettings.enableRepair) {
-      const repair = tryRepairFormula(this.formula);
-      if (repair) {
-        const repaired = createRepairedMath(this.formula, repair, false, pluginSettings.showRepairIndicators);
-        span.appendChild(repaired != null ? repaired : pluginSettings.gracefulFallback ? createGracefulFallback(this.formula) : document.createTextNode(`$ ${this.formula} $`));
-      } else {
-        span.appendChild(pluginSettings.gracefulFallback ? createGracefulFallback(this.formula) : document.createTextNode(`$ ${this.formula} $`));
+    let formulaToRender = this.formula;
+    let repairResult = null;
+    if (pluginSettings.enableRepair) {
+      repairResult = tryRepairFormula(this.formula);
+      if (repairResult) {
+        formulaToRender = repairResult.repaired;
       }
-    } else {
-      span.appendChild(pluginSettings.gracefulFallback ? createGracefulFallback(this.formula) : document.createTextNode(`$ ${this.formula} $`));
+    }
+    try {
+      const mathEl = (0, import_obsidian.renderMath)(formulaToRender, false);
+      if (repairResult && pluginSettings.showRepairIndicators) {
+        applyRepairIndicator(mathEl, repairResult);
+      }
+      span.appendChild(mathEl);
+    } catch (e) {
+      span.textContent = `$ ${this.formula} $`;
     }
     return span;
   }
@@ -527,38 +535,6 @@ var TolerantMathWidget = class extends import_view.WidgetType {
     return false;
   }
 };
-function hasRenderError(el) {
-  return el.querySelector(".katex-error") !== null || el.querySelector(".mje-error") !== null || el.querySelector(".mathjax-error") !== null || el.classList.contains("katex-error");
-}
-function tryRenderMath(latex, isBlock) {
-  try {
-    const el = (0, import_obsidian.renderMath)(latex, isBlock);
-    if (hasRenderError(el))
-      return null;
-    return el;
-  } catch (e) {
-    return null;
-  }
-}
-function createGracefulFallback(formula) {
-  const span = createEl("span", { cls: "tolerant-math-fallback" });
-  span.textContent = `$${formula}$`;
-  span.style.color = "var(--text-muted)";
-  span.style.fontFamily = "var(--font-monospace)";
-  span.style.fontSize = "0.9em";
-  return span;
-}
-function createRepairedMath(formula, repair, isBlock, showIndicator = true) {
-  const mathEl = tryRenderMath(repair.repaired, isBlock);
-  if (!mathEl)
-    return null;
-  mathEl.classList.add("tolerant-math-repaired");
-  if (showIndicator) {
-    mathEl.style.borderBottom = "1px dashed rgba(255, 165, 0, 0.4)";
-    mathEl.title = `Auto-repaired: ${repair.description}`;
-  }
-  return mathEl;
-}
 function buildDecorations(view) {
   const builder = new import_state.RangeSetBuilder();
   const cursors = view.state.selection.ranges;
@@ -655,41 +631,29 @@ var TolerantMathPlugin = class extends import_obsidian.Plugin {
     this.app.vault.cachedRead(file).then((content) => {
       var _a;
       const formulaRe = /\$\$(.*?)\$\$|\$(?!\$)(.*?)\$(?!\$)/gs;
-      let total = 0, original_ok = 0, repaired = 0, fallback = 0;
+      let total = 0, noRepairNeeded = 0, repaired = 0;
       const ruleCount = {};
       let m;
       while ((m = formulaRe.exec(content)) !== null) {
         const formula = ((_a = m[1]) != null ? _a : m[2]).trim();
         total++;
-        const rendered = tryRenderMath(formula, false);
-        if (rendered) {
-          original_ok++;
-        } else {
-          const repair = tryRepairFormula(formula);
-          if (repair) {
-            const repairedEl = tryRenderMath(repair.repaired, false);
-            if (repairedEl) {
-              repaired++;
-              for (const r of repair.applied) {
-                const key = r.split(":")[0];
-                ruleCount[key] = (ruleCount[key] || 0) + 1;
-              }
-            } else {
-              fallback++;
-            }
-          } else {
-            fallback++;
+        const repair = tryRepairFormula(formula);
+        if (repair) {
+          repaired++;
+          for (const r of repair.applied) {
+            const key = r.split(":")[0];
+            ruleCount[key] = (ruleCount[key] || 0) + 1;
           }
+        } else {
+          noRepairNeeded++;
         }
       }
-      (0, import_obsidian.finishRenderMath)();
       const rules = Object.entries(ruleCount).map(([k, v]) => `${k}\xD7${v}`).join(", ");
       console.log(
         `[tolerant-math] Repair report for ${file.name}:
   Total formulas scanned: ${total}
-  Rendered successfully (original): ${original_ok}
-  Repaired and rendered: ${repaired}
-  Graceful fallback (unfixable): ${fallback}
+  No repair needed: ${noRepairNeeded}
+  Repaired: ${repaired}
   Rules applied: ${rules || "(none)"}`
       );
     });
@@ -806,28 +770,24 @@ var TolerantMathPlugin = class extends import_obsidian.Plugin {
         );
       }
       const formula = match[1].trim();
-      const rendered = tryRenderMath(formula, false);
-      if (rendered) {
-        rendered.classList.add("tolerant-math-inline");
-        fragment.appendChild(rendered);
-        didReplace = true;
-      } else if (pluginSettings.enableRepair) {
-        const repair = tryRepairFormula(formula);
-        if (repair) {
-          const repaired = createRepairedMath(formula, repair, false, pluginSettings.showRepairIndicators);
-          if (repaired) {
-            repaired.classList.add("tolerant-math-inline");
-            fragment.appendChild(repaired);
-          } else {
-            fragment.appendChild(pluginSettings.gracefulFallback ? createGracefulFallback(formula) : document.createTextNode(match[0]));
-          }
-        } else {
-          fragment.appendChild(pluginSettings.gracefulFallback ? createGracefulFallback(formula) : document.createTextNode(match[0]));
+      let formulaToRender = formula;
+      let repairResult = null;
+      if (pluginSettings.enableRepair) {
+        repairResult = tryRepairFormula(formula);
+        if (repairResult) {
+          formulaToRender = repairResult.repaired;
         }
+      }
+      try {
+        const mathEl = (0, import_obsidian.renderMath)(formulaToRender, false);
+        mathEl.classList.add("tolerant-math-inline");
+        if (repairResult && pluginSettings.showRepairIndicators) {
+          applyRepairIndicator(mathEl, repairResult);
+        }
+        fragment.appendChild(mathEl);
         didReplace = true;
-      } else {
-        fragment.appendChild(pluginSettings.gracefulFallback ? createGracefulFallback(formula) : document.createTextNode(match[0]));
-        didReplace = true;
+      } catch (e) {
+        fragment.appendChild(document.createTextNode(match[0]));
       }
       lastIndex = match.index + match[0].length;
     }
@@ -859,12 +819,6 @@ var TolerantMathSettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("Show repair indicators").setDesc("Show dashed underline on auto-repaired formulas").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showRepairIndicators).onChange(async (value) => {
         this.plugin.settings.showRepairIndicators = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian.Setting(containerEl).setName("Graceful fallback").setDesc("Show muted source text instead of red errors for unfixable formulas").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.gracefulFallback).onChange(async (value) => {
-        this.plugin.settings.gracefulFallback = value;
         await this.plugin.saveSettings();
       })
     );

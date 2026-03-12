@@ -1,4 +1,19 @@
-import { Plugin, renderMath, finishRenderMath } from "obsidian";
+import { Plugin, renderMath, finishRenderMath, PluginSettingTab, App, Setting } from "obsidian";
+import { tryRepairFormula, RepairResult } from "./repair";
+
+interface TolerantMathSettings {
+    enableRepair: boolean;
+    showRepairIndicators: boolean;
+    gracefulFallback: boolean;
+}
+
+const DEFAULT_SETTINGS: TolerantMathSettings = {
+    enableRepair: true,
+    showRepairIndicators: true,
+    gracefulFallback: true,
+};
+
+let pluginSettings: TolerantMathSettings = DEFAULT_SETTINGS;
 import {
     Decoration,
     DecorationSet,
@@ -30,11 +45,19 @@ class TolerantMathWidget extends WidgetType {
 
     toDOM(): HTMLElement {
         const span = createEl("span", { cls: "tolerant-math-widget" });
-        try {
-            const mathEl = renderMath(this.formula, false);
-            span.appendChild(mathEl);
-        } catch {
-            span.textContent = `$ ${this.formula} $`;
+        const rendered = tryRenderMath(this.formula, false);
+        if (rendered) {
+            span.appendChild(rendered);
+        } else if (pluginSettings.enableRepair) {
+            const repair = tryRepairFormula(this.formula);
+            if (repair) {
+                const repaired = createRepairedMath(this.formula, repair, false, pluginSettings.showRepairIndicators);
+                span.appendChild(repaired ?? (pluginSettings.gracefulFallback ? createGracefulFallback(this.formula) : document.createTextNode(`$ ${this.formula} $`)));
+            } else {
+                span.appendChild(pluginSettings.gracefulFallback ? createGracefulFallback(this.formula) : document.createTextNode(`$ ${this.formula} $`));
+            }
+        } else {
+            span.appendChild(pluginSettings.gracefulFallback ? createGracefulFallback(this.formula) : document.createTextNode(`$ ${this.formula} $`));
         }
         return span;
     }
@@ -42,6 +65,52 @@ class TolerantMathWidget extends WidgetType {
     ignoreEvent(): boolean {
         return false;
     }
+}
+
+// ── Repair helpers ──────────────────────────────────────────────────────────
+
+function hasRenderError(el: HTMLElement): boolean {
+    return (
+        el.querySelector(".katex-error") !== null ||
+        el.querySelector(".mje-error") !== null ||
+        el.querySelector(".mathjax-error") !== null ||
+        el.classList.contains("katex-error")
+    );
+}
+
+function tryRenderMath(latex: string, isBlock: boolean): HTMLElement | null {
+    try {
+        const el = renderMath(latex, isBlock);
+        if (hasRenderError(el)) return null;
+        return el;
+    } catch {
+        return null;
+    }
+}
+
+function createGracefulFallback(formula: string): HTMLElement {
+    const span = createEl("span", { cls: "tolerant-math-fallback" });
+    span.textContent = `$${formula}$`;
+    span.style.color = "var(--text-muted)";
+    span.style.fontFamily = "var(--font-monospace)";
+    span.style.fontSize = "0.9em";
+    return span;
+}
+
+function createRepairedMath(
+    formula: string,
+    repair: RepairResult,
+    isBlock: boolean,
+    showIndicator: boolean = true,
+): HTMLElement | null {
+    const mathEl = tryRenderMath(repair.repaired, isBlock);
+    if (!mathEl) return null;
+    mathEl.classList.add("tolerant-math-repaired");
+    if (showIndicator) {
+        mathEl.style.borderBottom = "1px dashed rgba(255, 165, 0, 0.4)";
+        mathEl.title = `Auto-repaired: ${repair.description}`;
+    }
+    return mathEl;
 }
 
 // ── Live Preview ViewPlugin ──────────────────────────────────────────────────
@@ -127,13 +196,79 @@ const tolerantMathViewPlugin = ViewPlugin.fromClass(
 // ── Plugin main class ────────────────────────────────────────────────────────
 
 export default class TolerantMathPlugin extends Plugin {
+    settings: TolerantMathSettings = DEFAULT_SETTINGS;
+
     async onload() {
+        await this.loadSettings();
+        pluginSettings = this.settings;
+        this.addSettingTab(new TolerantMathSettingTab(this.app, this));
+
         // Live Preview
         this.registerEditorExtension(tolerantMathViewPlugin);
 
         // Reading View
         this.registerMarkdownPostProcessor((element) => {
             this.processElement(element);
+        });
+
+        // Dev command: repair report
+        this.addCommand({
+            id: "show-repair-report",
+            name: "Show Repair Report",
+            callback: () => this.showRepairReport(),
+        });
+    }
+
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    }
+
+    async saveSettings() {
+        await this.saveData(this.settings);
+        pluginSettings = this.settings;
+    }
+
+    private showRepairReport() {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) {
+            console.log("[tolerant-math] No active file");
+            return;
+        }
+        this.app.vault.cachedRead(file).then((content) => {
+            const formulaRe = /\$\$(.*?)\$\$|\$(?!\$)(.*?)\$(?!\$)/gs;
+            let total = 0, original_ok = 0, repaired = 0, fallback = 0;
+            const ruleCount: Record<string, number> = {};
+            let m: RegExpExecArray | null;
+            while ((m = formulaRe.exec(content)) !== null) {
+                const formula = (m[1] ?? m[2]).trim();
+                total++;
+                const rendered = tryRenderMath(formula, false);
+                if (rendered) {
+                    original_ok++;
+                } else {
+                    const repair = tryRepairFormula(formula);
+                    if (repair) {
+                        const repairedEl = tryRenderMath(repair.repaired, false);
+                        if (repairedEl) {
+                            repaired++;
+                            for (const r of repair.applied) {
+                                const key = r.split(":")[0];
+                                ruleCount[key] = (ruleCount[key] || 0) + 1;
+                            }
+                        } else { fallback++; }
+                    } else { fallback++; }
+                }
+            }
+            finishRenderMath();
+            const rules = Object.entries(ruleCount).map(([k, v]) => `${k}×${v}`).join(", ");
+            console.log(
+                `[tolerant-math] Repair report for ${file.name}:\n` +
+                `  Total formulas scanned: ${total}\n` +
+                `  Rendered successfully (original): ${original_ok}\n` +
+                `  Repaired and rendered: ${repaired}\n` +
+                `  Graceful fallback (unfixable): ${fallback}\n` +
+                `  Rules applied: ${rules || "(none)"}`
+            );
         });
     }
 
@@ -283,14 +418,28 @@ export default class TolerantMathPlugin extends Plugin {
 
             // Render the formula
             const formula = match[1].trim();
-            try {
-                const mathEl = renderMath(formula, false);
-                mathEl.classList.add("tolerant-math-inline");
-                fragment.appendChild(mathEl);
+            const rendered = tryRenderMath(formula, false);
+            if (rendered) {
+                rendered.classList.add("tolerant-math-inline");
+                fragment.appendChild(rendered);
                 didReplace = true;
-            } catch {
-                // Keep raw text if rendering fails
-                fragment.appendChild(document.createTextNode(match[0]));
+            } else if (pluginSettings.enableRepair) {
+                const repair = tryRepairFormula(formula);
+                if (repair) {
+                    const repaired = createRepairedMath(formula, repair, false, pluginSettings.showRepairIndicators);
+                    if (repaired) {
+                        repaired.classList.add("tolerant-math-inline");
+                        fragment.appendChild(repaired);
+                    } else {
+                        fragment.appendChild(pluginSettings.gracefulFallback ? createGracefulFallback(formula) : document.createTextNode(match[0]));
+                    }
+                } else {
+                    fragment.appendChild(pluginSettings.gracefulFallback ? createGracefulFallback(formula) : document.createTextNode(match[0]));
+                }
+                didReplace = true;
+            } else {
+                fragment.appendChild(pluginSettings.gracefulFallback ? createGracefulFallback(formula) : document.createTextNode(match[0]));
+                didReplace = true;
             }
 
             lastIndex = match.index + match[0].length;
@@ -308,5 +457,57 @@ export default class TolerantMathPlugin extends Plugin {
         }
 
         return didReplace;
+    }
+}
+
+// ── Settings Tab ────────────────────────────────────────────────────────────
+
+class TolerantMathSettingTab extends PluginSettingTab {
+    plugin: TolerantMathPlugin;
+
+    constructor(app: App, plugin: TolerantMathPlugin) {
+        super(app, plugin);
+        this.plugin = plugin;
+    }
+
+    display(): void {
+        const { containerEl } = this;
+        containerEl.empty();
+
+        new Setting(containerEl)
+            .setName("Enable auto-repair")
+            .setDesc("Try to fix broken formulas before rendering")
+            .addToggle((toggle) =>
+                toggle
+                    .setValue(this.plugin.settings.enableRepair)
+                    .onChange(async (value) => {
+                        this.plugin.settings.enableRepair = value;
+                        await this.plugin.saveSettings();
+                    })
+            );
+
+        new Setting(containerEl)
+            .setName("Show repair indicators")
+            .setDesc("Show dashed underline on auto-repaired formulas")
+            .addToggle((toggle) =>
+                toggle
+                    .setValue(this.plugin.settings.showRepairIndicators)
+                    .onChange(async (value) => {
+                        this.plugin.settings.showRepairIndicators = value;
+                        await this.plugin.saveSettings();
+                    })
+            );
+
+        new Setting(containerEl)
+            .setName("Graceful fallback")
+            .setDesc("Show muted source text instead of red errors for unfixable formulas")
+            .addToggle((toggle) =>
+                toggle
+                    .setValue(this.plugin.settings.gracefulFallback)
+                    .onChange(async (value) => {
+                        this.plugin.settings.gracefulFallback = value;
+                        await this.plugin.saveSettings();
+                    })
+            );
     }
 }

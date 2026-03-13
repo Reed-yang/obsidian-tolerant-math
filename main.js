@@ -508,8 +508,7 @@ var import_state = require("@codemirror/state");
 var import_language = require("@codemirror/language");
 var DEFAULT_SETTINGS = {
   enableRepair: true,
-  showRepairIndicators: true,
-  gracefulFallback: true
+  showRepairIndicators: true
 };
 var pluginSettings = DEFAULT_SETTINGS;
 var TOLERANT_MATH_REGEX = /(?<!\$)\$[ \t]+([^\$\n]+?)[ \t]+\$(?!\$)/g;

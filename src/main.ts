@@ -4,13 +4,11 @@ import { tryRepairFormula, RepairResult } from "./repair";
 interface TolerantMathSettings {
     enableRepair: boolean;
     showRepairIndicators: boolean;
-    gracefulFallback: boolean;
 }
 
 const DEFAULT_SETTINGS: TolerantMathSettings = {
     enableRepair: true,
     showRepairIndicators: true,
-    gracefulFallback: true,
 };
 
 let pluginSettings: TolerantMathSettings = DEFAULT_SETTINGS;

@@ -52,6 +52,24 @@ function fixAbbreviationSpacing(latex: string): [string, string[]] {
     return [fixed, applied];
 }
 
+// ── P5: Restore backslash-escaped brace delimiters ──────────────────────────
+// CommonMark consumes \ before { and } (e.g., \left\{ → \left{ in Reading View).
+// Detectable because \left{ and \right} are invalid LaTeX ("{" is a grouping
+// character, not a delimiter). Live Preview is unaffected (raw source text).
+
+const DELIMITER_CMD_BRACE_RE =
+    /\\(left|right|bigl|bigr|Bigl|Bigr|biggl|biggr|Biggl|Biggr|big|Big|bigg|Bigg)([{}])/g;
+
+function fixEscapedBraceDelimiters(latex: string): [string, string[]] {
+    const applied: string[] = [];
+    DELIMITER_CMD_BRACE_RE.lastIndex = 0;
+    const fixed = latex.replace(DELIMITER_CMD_BRACE_RE, (_match, cmd, brace) => {
+        applied.push(`P5: \\${cmd}${brace} -> \\${cmd}\\${brace}`);
+        return `\\${cmd}\\${brace}`;
+    });
+    return [fixed, applied];
+}
+
 // ── P1: Brace balance (stack-based, extended R3) ────────────────────────────
 
 function fixBraceBalance(latex: string): [string, string[]] {
@@ -280,12 +298,13 @@ function fixCommandNames(latex: string): [string, string[]] {
 type RuleFn = (latex: string) => [string, string[]];
 
 const REPAIR_RULES: RuleFn[] = [
-    fixAbbreviationSpacing,   // R4
-    fixTextCommandSplitting,  // R1
-    fixBraceBalance,          // P1 (extended R3)
-    fixLeftRightPairing,      // P2
-    fixUnclosedEnvironments,  // P3
-    fixCommandNames,          // P4
+    fixAbbreviationSpacing,      // R4
+    fixTextCommandSplitting,     // R1
+    fixEscapedBraceDelimiters,   // P5 (before P1 — restores \{ \} so brace count stays correct)
+    fixBraceBalance,             // P1 (extended R3)
+    fixLeftRightPairing,         // P2
+    fixUnclosedEnvironments,     // P3
+    fixCommandNames,             // P4
 ];
 
 export function tryRepairFormula(latex: string): RepairResult | null {

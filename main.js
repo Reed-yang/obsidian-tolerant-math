@@ -57,6 +57,16 @@ function fixAbbreviationSpacing(latex) {
   });
   return [fixed, applied];
 }
+var DELIMITER_CMD_BRACE_RE = /\\(left|right|bigl|bigr|Bigl|Bigr|biggl|biggr|Biggl|Biggr|big|Big|bigg|Bigg)([{}])/g;
+function fixEscapedBraceDelimiters(latex) {
+  const applied = [];
+  DELIMITER_CMD_BRACE_RE.lastIndex = 0;
+  const fixed = latex.replace(DELIMITER_CMD_BRACE_RE, (_match, cmd, brace) => {
+    applied.push(`P5: \\${cmd}${brace} -> \\${cmd}\\${brace}`);
+    return `\\${cmd}\\${brace}`;
+  });
+  return [fixed, applied];
+}
 function fixBraceBalance(latex) {
   const applied = [];
   const chars = [...latex];
@@ -458,6 +468,8 @@ var REPAIR_RULES = [
   // R4
   fixTextCommandSplitting,
   // R1
+  fixEscapedBraceDelimiters,
+  // P5 (before P1 — restores \{ \} so brace count stays correct)
   fixBraceBalance,
   // P1 (extended R3)
   fixLeftRightPairing,

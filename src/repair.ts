@@ -74,12 +74,17 @@ function fixEscapedBraceDelimiters(latex: string): [string, string[]] {
 
 function fixBraceBalance(latex: string): [string, string[]] {
     const applied: string[] = [];
-    // Stack-based approach: walk left-to-right, track matched braces
+    // Stack-based approach: walk left-to-right, track matched braces.
+    // Skip \{ and \} (LaTeX escaped braces) — they are literal glyphs, not grouping.
     const chars = [...latex];
     const stack: number[] = []; // indices of unmatched '{'
     const unmatchedCloses: number[] = []; // indices of unmatched '}'
 
     for (let i = 0; i < chars.length; i++) {
+        if (chars[i] === "\\" && i + 1 < chars.length && (chars[i + 1] === "{" || chars[i + 1] === "}")) {
+            i++; // skip \{ or \}
+            continue;
+        }
         if (chars[i] === "{") {
             stack.push(i);
         } else if (chars[i] === "}") {

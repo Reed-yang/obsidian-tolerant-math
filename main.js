@@ -73,6 +73,10 @@ function fixBraceBalance(latex) {
   const stack = [];
   const unmatchedCloses = [];
   for (let i = 0; i < chars.length; i++) {
+    if (chars[i] === "\\" && i + 1 < chars.length && (chars[i + 1] === "{" || chars[i + 1] === "}")) {
+      i++;
+      continue;
+    }
     if (chars[i] === "{") {
       stack.push(i);
     } else if (chars[i] === "}") {

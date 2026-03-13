@@ -50,7 +50,7 @@ After building, `main.js` will appear in the project directory. Reload the plugi
 
 ### Reading View
 
-When switching to Reading View, the plugin scans the rendered DOM, finds `$ formula $` patterns in text nodes, and replaces them with properly rendered MathJax elements using Obsidian's built-in math API.
+When switching to Reading View, the plugin scans the rendered DOM, finds `$ formula $` patterns in text nodes, runs the auto-repair engine on each formula, then renders them as MathJax elements using Obsidian's built-in math API.
 
 **Left untouched:**
 - `$formula$` — no spaces, already handled by Obsidian
@@ -63,8 +63,30 @@ When switching to Reading View, the plugin scans the rendered DOM, finds `$ form
 In Live Preview mode, formulas are rendered inline as you write:
 
 - **Cursor inside a formula** — the decoration is removed and the raw source text `$ formula $` is shown for editing
-- **Cursor outside a formula** — the formula is displayed as rendered math
+- **Cursor outside a formula** — the formula is displayed as rendered math (with auto-repair applied)
 - Only formulas within the **current viewport** are processed (performance optimization)
+
+### Auto-Repair Engine
+
+The plugin includes a formula repair engine that fixes common OCR-introduced LaTeX errors *before* rendering. Repairs are applied in-memory and never modify source files.
+
+**Repair rules:**
+- **R1**: Merge split words in text commands (`\text{i f}` → `\text{if}`)
+- **R4**: Fix spaced abbreviations (`\mathrm{i . e .}` → `\mathrm{i.e.}`)
+- **P5**: Restore escaped brace delimiters consumed by Markdown parser (`\left{` → `\left\{`)
+- **P1**: Fix brace balance (stack-based `{`/`}` matching)
+- **P2**: Pair `\left`/`\right` delimiters
+- **P3**: Close unclosed environments (`\begin{cases}` without `\end{cases}`)
+- **P4**: Fuzzy-correct misspelled command names via Levenshtein distance
+
+Repaired formulas are shown with a dashed orange underline (configurable in settings). Hover to see what was fixed.
+
+### Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Enable auto-repair | On | Try to fix broken formulas before rendering. Turning ON may require restarting Obsidian. |
+| Show repair indicators | On | Show dashed underline on auto-repaired formulas |
 
 ---
 
@@ -113,7 +135,7 @@ Using a lazy quantifier (`+?`) correctly handles multiple formulas on the same l
 
 ### Reading View Pipeline
 
-`registerMarkdownPostProcessor` → **inline formatting unwrap pre-pass** (multi-pass: unwraps `<em>`, `<strong>`, classless `<span>`, `<del>`, `<s>` near `$` characters, with safety guards to preserve legitimate formatting) → `TreeWalker` traverses text nodes (skipping `<code>`, `<pre>`, `<math>`, `.math` elements) → matched nodes are split into a `DocumentFragment` with rendered math elements inserted → `finishRenderMath()` is called once per batch to flush the MathJax render queue.
+`registerMarkdownPostProcessor` → **inline formatting unwrap pre-pass** (multi-pass: unwraps `<em>`, `<strong>`, classless `<span>`, `<del>`, `<s>` near `$` characters, with safety guards to preserve legitimate formatting) → `TreeWalker` traverses text nodes (skipping `<code>`, `<pre>`, `<math>`, `.math` elements) → for each matched formula, `tryRepairFormula()` is called → the (possibly repaired) formula is passed to `renderMath()` → `finishRenderMath()` is called once per batch to flush the MathJax render queue.
 
 The unwrap pre-pass is necessary because Obsidian's Markdown parser consumes `*`, `_`, and `\` before punctuation as emphasis/escape markers, splitting formula text across element boundaries. The pre-pass runs in a loop: each pass unwraps elements adjacent to `$`, then `normalize()` merges text nodes, propagating `$` closer to remaining inner elements. A regex gate and a LaTeX content heuristic prevent unwrapping legitimate bold/italic/strikethrough formatting outside formulas.
 
@@ -121,7 +143,7 @@ Text nodes are collected before processing begins to avoid invalidating the walk
 
 ### Live Preview Pipeline
 
-A CodeMirror 6 `ViewPlugin` scans `visibleRanges` on every document change, viewport change, or cursor move. Matching ranges are decorated with `Decoration.replace` backed by a `WidgetType` that calls `renderMath()` in `toDOM()`. If any cursor selection overlaps a match, the decoration is skipped for that range, exposing the raw source text.
+A CodeMirror 6 `ViewPlugin` scans `visibleRanges` on every document change, viewport change, or cursor move. Matching ranges are decorated with `Decoration.replace` backed by a `WidgetType` whose `toDOM()` runs `tryRepairFormula()` then `renderMath()`. If any cursor selection overlaps a match, the decoration is skipped for that range, exposing the raw source text.
 
 ### Rendering API
 
@@ -134,7 +156,7 @@ Obsidian's built-in `renderMath()` and `finishRenderMath()` are used exclusively
 - **Space requirement**: Only `$ formula $` (spaces on **both** sides) is matched. Asymmetric cases like `$formula $` are not handled. OCR output is typically symmetric, making this a non-issue in practice.
 - **Dollar sign inside formula**: Content containing a literal `$` (e.g., `$ \$100 $`) is not matched — this format is inherently ambiguous and is intentionally left unhandled.
 - **No cross-line formulas**: Inline math cannot span multiple lines, consistent with Obsidian's native behavior.
-- **Backslash escapes in Reading View**: CommonMark consumes `\` before ASCII punctuation during parsing (e.g., `\|` → `|`). In Reading View, formulas with `\|` (norm notation) render with single bars instead of double bars. Live Preview is unaffected. Workaround: use `\Vert` instead of `\|`.
+- **Backslash escapes in Reading View**: CommonMark consumes `\` before ASCII punctuation during parsing (e.g., `\|` → `|`, `\{` → `{`). The auto-repair engine (P5 rule) restores `\left\{` / `\right\}` and other delimiter-sizing commands, since `\left{` is always invalid LaTeX. However, `\|` (norm notation) cannot be repaired because `|` is valid LaTeX on its own. Live Preview is unaffected. Workaround: use `\Vert` instead of `\|`.
 - **Source Mode**: No rendering is applied in Source (raw text) mode, which is the expected behavior.
 
 ---
@@ -146,7 +168,8 @@ Obsidian's built-in `renderMath()` and `finishRenderMath()` are used exclusively
 ```
 obsidian-tolerant-math/
 ├── src/
-│   └── main.ts          # All plugin logic (single file)
+│   ├── main.ts          # Plugin entry point: rendering, settings, commands
+│   └── repair.ts        # LaTeX repair engine (pure functions, no Obsidian deps)
 ├── manifest.json        # Plugin metadata
 ├── package.json
 ├── tsconfig.json
